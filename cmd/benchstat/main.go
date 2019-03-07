@@ -41,6 +41,15 @@
 // none (input order), delta (percent improvement), or name (benchmark name).
 // A leading “-” prefix, as in “-delta”, reverses the order.
 //
+// The -git option allows for automation and quick comparison of
+// benchmarks in a git repository. When supplied, arguments are
+// treated as git refs. A single ref will compare against the ref and
+// the current branch, multiple refs will compare across those
+// branches specifically - two refs will compare between the two and
+// multiple refs past that will be treated in the same way as when
+// more than two files are supplied. -benchargs controls the
+// arguments to "go test" in this mode.
+//
 // Example
 //
 // Suppose we collect benchmark results from running ``go test -bench=Encode''
@@ -103,6 +112,7 @@ import (
 	"strings"
 
 	"golang.org/x/perf/benchstat"
+	"golang.org/x/perf/internal/benchgit"
 )
 
 var exit = os.Exit // replaced during testing
@@ -121,6 +131,8 @@ var (
 	flagHTML      = flag.Bool("html", false, "print results as an HTML table")
 	flagSplit     = flag.String("split", "pkg,goos,goarch", "split benchmarks by `labels`")
 	flagSort      = flag.String("sort", "none", "sort by `order`: [-]delta, [-]name, none")
+	flagGit       = flag.Bool("git", false, "interpret arguments as git refs")
+	flagBenchArgs = flag.String("benchargs", "-count=5 -run='^$' -bench=. .", "arguments to pass to go test (git mode only)")
 )
 
 var deltaTestNames = map[string]benchstat.DeltaTest{
@@ -170,15 +182,44 @@ func main() {
 		}
 		c.Order = order
 	}
-	for _, file := range flag.Args() {
-		f, err := os.Open(file)
-		if err != nil {
-			log.Fatal(err)
+
+	if *flagGit {
+		// Git mode, run benchmarks in all supplied branches
+		var refs []string
+		switch flag.NArg() {
+		case 1:
+			origRef, err := benchgit.FindRef()
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			refs = []string{flag.Arg(0), origRef}
+
+		default:
+			refs = flag.Args()
 		}
-		if err := c.AddFile(file, f); err != nil {
-			log.Fatal(err)
+
+		for _, ref := range refs {
+			buf, err := benchgit.Do(*flagBenchArgs, ref)
+			if err != nil {
+				log.Fatal(err)
+			}
+			if err := c.AddFile(ref, buf); err != nil {
+				log.Fatal(err)
+			}
 		}
-		f.Close()
+	} else {
+		// Standard file mode
+		for _, file := range flag.Args() {
+			f, err := os.Open(file)
+			if err != nil {
+				log.Fatal(err)
+			}
+			if err := c.AddFile(file, f); err != nil {
+				log.Fatal(err)
+			}
+			f.Close()
+		}
 	}
 
 	tables := c.Tables()
